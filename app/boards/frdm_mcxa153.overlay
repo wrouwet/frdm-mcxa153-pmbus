@@ -1,0 +1,78 @@
+/*
+ * FRDM-MCXA153 as a PMBus target.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/adc/mcux-lpadc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	chosen {
+		zephyr,code-partition = &code_partition;
+	};
+
+	zephyr,user {
+		/* SMBALERT#, open drain, on the mikroBUS INT pin (P2_5). */
+		smbalert-gpios = <&gpio2 5 (GPIO_ACTIVE_LOW | GPIO_OPEN_DRAIN)>;
+	};
+};
+
+/*
+ * The PMBus pins: LPI2C0 on P3_27 (SCL) and P3_28 (SDA), the mikroBUS header J5 pins
+ * 5 and 6. They are the only 5 V tolerant pins on the MCX A153, and the same pins
+ * frdm-mcxa153-usb-i2c-hub uses, so two boards wire header to header.
+ */
+&pinctrl {
+	pinmux_pmbus: pinmux_pmbus {
+		group0 {
+			pinmux = <LPI2C0_SDA_P3_28>,
+				 <LPI2C0_SCL_P3_27>;
+			slew-rate = "fast";
+			drive-strength = "high";
+			input-enable;
+			bias-pull-up;
+			drive-open-drain;
+		};
+	};
+};
+
+&lpi2c0 {
+	pinctrl-0 = <&pinmux_pmbus>;
+};
+
+/* The board reserves the flash for MCUboot; this app runs without it. */
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+
+&flash {
+	partitions {
+		code_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
+			label = "code";
+			reg = <0x00000000 DT_SIZE_K(112)>;
+		};
+	};
+};
+
+/* The die temperature sensor, as samples/sensor/die_temp_polling sets it up. */
+&lpadc0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_EXTERNAL0";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 131)>;
+		zephyr,input-positive = <MCUX_LPADC_CH26A>;
+	};
+};
+
+&temp0 {
+	status = "okay";
+	io-channels = <&lpadc0 0>;
+};

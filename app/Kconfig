@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "FRDM-MCXA153 PMBus target"
+
+config PMBUS_ADDRESS
+	hex "PMBus target address (7-bit)"
+	default 0x58
+	range 0x08 0x77
+	help
+	  0x58 is the usual first PMBus address of a power supply; its FRU EEPROM would
+	  sit at 0x50.
+
+config PMBUS_UPDATE_PERIOD_MS
+	int "Sensor and limit evaluation period (ms)"
+	default 200
+
+config PMBUS_SMBUS_TIMEOUT_MS
+	int "SMBus target timeout (ms)"
+	default 30
+	help
+	  If a transaction makes no progress for this long, the target interface resets
+	  and the transaction is dropped. SMBus requires devices to reset between 25 ms
+	  and 35 ms of SCL held low.
+
+source "Kconfig.zephyr"
