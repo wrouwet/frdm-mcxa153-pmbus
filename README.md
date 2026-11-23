@@ -178,3 +178,19 @@ A2h from offset 96 (offset write, repeated start, read):
 
 The time between bytes is the host's: `i2c-imx` moves one byte per interrupt, and
 the controller holds SCL until the driver has read it.
+
+### Host CPU load for back-to-back reads
+
+Back-to-back 64-byte A2h reads from the same LX2160ARDB host (16x Cortex-A72,
+SONiC, Python `smbus2`), two 20 s runs:
+
+| | Result |
+|---|---|
+| Throughput | 119-120 records/s (about 7.6 KB/s payload), bus-bound at 8.4 ms per record |
+| Reader process | 17.3% of one core (about 2% user, 15% system), moved between cores by the scheduler |
+| Context switches | about 8,100/s: the reader sleeps until each byte's interrupt |
+| I2C interrupt | about 8,070/s, all on cpu0 (default affinity), 4.2 us per handler = 3.4% of cpu0 |
+| Total | about 0.21 of one core, about 1.3% of the SoC |
+
+`/proc/stat` deltas are not usable at this size: SONiC's background load varies
+by more than the test adds, and the kernel has no IRQ time accounting.
