@@ -1,0 +1,45 @@
+/*
+ * FRDM-MCXA153 as an SFP module (SFF-8472) on LPI2C0: the same pins as the PMBus
+ * target, P3_27 (SCL) and P3_28 (SDA) on the mikroBUS header (labelled SCL/SDA).
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	chosen {
+		zephyr,code-partition = &code_partition;
+	};
+};
+
+&pinctrl {
+	pinmux_sfp: pinmux_sfp {
+		group0 {
+			pinmux = <LPI2C0_SDA_P3_28>,
+				 <LPI2C0_SCL_P3_27>;
+			slew-rate = "fast";
+			drive-strength = "high";
+			input-enable;
+			bias-pull-up;
+			drive-open-drain;
+		};
+	};
+};
+
+&lpi2c0 {
+	pinctrl-0 = <&pinmux_sfp>;
+};
+
+/* The board reserves the flash for MCUboot; this app runs without it. */
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+
+&flash {
+	partitions {
+		code_partition: partition@0 {
+			compatible = "zephyr,mapped-partition";
+			label = "code";
+			reg = <0x00000000 DT_SIZE_K(112)>;
+		};
+	};
+};

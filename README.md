@@ -131,3 +131,30 @@ Everything below is written and builds, but needs the board:
 ## License
 
 Apache-2.0
+
+## SFP module emulation (`sfp/`)
+
+A second app turns the board into an SFP optical module (SFF-8472) for I2C host
+testing, on the same pins: A0h (serial ID) at 0x50 and A2h (diagnostics) at 0x51.
+
+- A0h: SFP, LC, 10GBASE-SR, 850 nm, vendor `EXAMPLE`, PN `MCXA153-SFP-SR`, valid
+  CC_BASE/CC_EXT checksums.
+- A2h: thresholds (0-39), live diagnostics (96-105: temperature from the on-board
+  P3T1755, Vcc, TX bias, TX and RX power), status/control (110, host-writable soft
+  TX disable), alarm and warning flags (112-117) computed from the values, user
+  EEPROM (128-247, writable).
+- Shell: `sfp status`, `sfp set <temp|vcc|bias|tx|rx> <value|auto>`,
+  `sfp los on|off`, `sfp txfault on|off`, `sfp dump a0|a2`.
+
+Zephyr's LPI2C driver registers one target address and reads SASR before the
+callbacks run, which clears the matched address. The app adds 0x51 as LPI2C
+address match 1 and wraps the LPI2C0 interrupt (`CONFIG_DYNAMIC_INTERRUPTS`) to
+keep SSR's address match flags from the address interrupt.
+
+Build and flash:
+
+    west build -b frdm_mcxa153 -d build/sfp sfp
+    west flash -d build/sfp -r linkserver
+
+Reading the status block from a Linux host (bus N): write offset 96 to 0x51, then
+read 64 bytes (e.g. `smbus2` `i2c_rdwr`).
