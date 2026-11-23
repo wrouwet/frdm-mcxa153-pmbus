@@ -158,3 +158,23 @@ Build and flash:
 
 Reading the status block from a Linux host (bus N): write offset 96 to 0x51, then
 read 64 bytes (e.g. `smbus2` `i2c_rdwr`).
+
+### Transaction timing (`sfp timing`)
+
+The interrupt wrapper also timestamps the LPI2C0 interrupts with the DWT cycle
+counter (96 MHz): first address match, repeated start, every read-phase TX
+interrupt, STOP, and how long the target holds SCL per byte. Measured from an
+LX2160ARDB (Linux `i2c-imx`, IIC1 87.5 MHz / 896 = 97.66 kHz) for a 64-byte read of
+A2h from offset 96 (offset write, repeated start, read):
+
+| Measured at | Result |
+|---|---|
+| Host, application (`i2c_rdwr`, 500x) | min 7.1 ms, median 8.0 ms, max 9.9 ms |
+| Host, kernel I2C trace (start to result) | 7.7-8.7 ms |
+| Target, first address byte to STOP | min 6.9 ms, avg 7.7 ms, max 9.5 ms |
+| Target, per read byte | avg 117.7 us (9 SCL = 92.2 us, so about 26 us per byte between bytes) |
+| Target, SCL held per byte | at most 3.1 us |
+| Pure bus time at 97.66 kHz | 6.2 ms |
+
+The time between bytes is the host's: `i2c-imx` moves one byte per interrupt, and
+the controller holds SCL until the driver has read it.

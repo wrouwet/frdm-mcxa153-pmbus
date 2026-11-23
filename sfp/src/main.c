@@ -46,6 +46,24 @@ static const struct device *const temp_dev = DEVICE_DT_GET_OR_NULL(DT_ALIAS(ambi
 static struct _isr_table_entry driver_isr;
 static volatile uint32_t ssr_at_address;
 
+/*
+ * Transaction timing from the DWT cycle counter, taken in lpi2c_isr: first address
+ * match (end of the first address byte), repeated start (end of the second address
+ * byte) and STOP. Only transactions with a repeated start (offset write, then read)
+ * are counted.
+ */
+static struct {
+	bool active, restarted;
+	uint32_t t_addr, t_restart;
+	uint32_t n, total_last, total_min, total_max, read_last;
+	uint64_t total_sum;
+	uint16_t nb;            /* read-phase TX interrupts of the current transaction */
+	uint32_t tx[72];        /* their DWT stamps */
+	uint32_t hold_max;      /* longest handler run on a TX interrupt (SCL held low) */
+	uint16_t nb_last;
+	uint32_t tx_last[72];
+} tm;
+
 /* A2h byte offsets */
 #define A2_THRESHOLDS 0
 #define A2_CC_DMI 95
@@ -224,11 +242,43 @@ static void lpi2c_isr(const void *arg)
 {
 	uint32_t ssr = lpi2c->SSR;
 
+	uint32_t now = DWT->CYCCNT;
+
 	ARG_UNUSED(arg);
 	if ((ssr & LPI2C_SSR_AVF_MASK) != 0U) {
 		ssr_at_address = ssr;
+		if (!tm.active) {
+			tm.active = true;
+			tm.restarted = false;
+			tm.t_addr = now;
+		} else {
+			tm.restarted = true;
+			tm.t_restart = now;
+			tm.nb = 0;
+		}
+	}
+	if ((ssr & LPI2C_SSR_TDF_MASK) != 0U && tm.restarted && tm.nb < ARRAY_SIZE(tm.tx)) {
+		tm.tx[tm.nb++] = now;
+	}
+	if ((ssr & LPI2C_SSR_SDF_MASK) != 0U && tm.active) {
+		tm.active = false;
+		if (tm.restarted) {
+			uint32_t total = now - tm.t_addr;
+
+			tm.total_last = total;
+			tm.read_last = now - tm.t_restart;
+			tm.total_min = tm.n == 0U ? total : MIN(tm.total_min, total);
+			tm.total_max = MAX(tm.total_max, total);
+			tm.total_sum += total;
+			tm.n++;
+			tm.nb_last = tm.nb;
+			memcpy(tm.tx_last, tm.tx, tm.nb * sizeof(tm.tx[0]));
+		}
 	}
 	driver_isr.isr(driver_isr.arg);
+	if ((ssr & LPI2C_SSR_TDF_MASK) != 0U && tm.restarted) {
+		tm.hold_max = MAX(tm.hold_max, DWT->CYCCNT - now);
+	}
 }
 
 /* The device the host addressed, from the address match flags */
@@ -350,6 +400,9 @@ int main(void)
 		return 0;
 	}
 	add_a2_address();
+	CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	DWT->CYCCNT = 0;
+	DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 	driver_isr = _sw_isr_table[DT_IRQN(I2C_NODE) - CONFIG_GEN_IRQ_START_VECTOR];
 	irq_connect_dynamic(DT_IRQN(I2C_NODE), DT_IRQ(I2C_NODE, priority), lpi2c_isr, NULL, 0);
 	LOG_INF("SFP module: A0h at 0x%02x, A2h at 0x%02x", ADDR_A0, ADDR_A2);
@@ -464,11 +517,53 @@ static int cmd_dump(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static uint32_t cyc_to_ns(uint32_t cycles)
+{
+	return (uint32_t)((uint64_t)cycles * 1000000000ULL / SystemCoreClock);
+}
+
+static int cmd_timing(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc > 1 && strcmp(argv[1], "reset") == 0) {
+		unsigned int key = irq_lock();
+
+		memset(&tm, 0, sizeof(tm));
+		irq_unlock(key);
+		return 0;
+	}
+	shell_print(sh, "core clock %u Hz; %u transactions with a repeated start", SystemCoreClock,
+		    tm.n);
+	if (tm.n == 0U) {
+		return 0;
+	}
+	shell_print(sh, "first address byte to STOP: last %u ns, min %u ns, max %u ns, avg %u ns",
+		    cyc_to_ns(tm.total_last), cyc_to_ns(tm.total_min), cyc_to_ns(tm.total_max),
+		    cyc_to_ns((uint32_t)(tm.total_sum / tm.n)));
+	shell_print(sh, "read address byte to STOP (last): %u ns", cyc_to_ns(tm.read_last));
+	if (tm.nb_last > 2U) {
+		uint32_t mn = UINT32_MAX, mx = 0;
+
+		for (int i = 1; i < tm.nb_last; i++) {
+			uint32_t d = tm.tx_last[i] - tm.tx_last[i - 1];
+
+			mn = MIN(mn, d);
+			mx = MAX(mx, d);
+		}
+		shell_print(sh, "byte to byte (last read, %u TX irqs): min %u ns, max %u ns, avg %u ns",
+			    tm.nb_last, cyc_to_ns(mn), cyc_to_ns(mx),
+			    cyc_to_ns((tm.tx_last[tm.nb_last - 1] - tm.tx_last[0]) /
+				      (tm.nb_last - 1)));
+	}
+	shell_print(sh, "longest TX handler (SCL held by the target): %u ns", cyc_to_ns(tm.hold_max));
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(sfp_cmds,
 	SHELL_CMD(status, NULL, "Show the module state", cmd_status),
 	SHELL_CMD_ARG(set, NULL, "set <temp|vcc|bias|tx|rx> <C|mV|uA|uW|auto>", cmd_set, 3, 0),
 	SHELL_CMD_ARG(los, NULL, "los <on|off>: force RX loss of signal", cmd_los, 2, 0),
 	SHELL_CMD_ARG(txfault, NULL, "txfault <on|off>: force TX fault", cmd_txfault, 2, 0),
 	SHELL_CMD_ARG(dump, NULL, "dump <a0|a2>", cmd_dump, 2, 0),
+	SHELL_CMD_ARG(timing, NULL, "timing [reset]: transaction times", cmd_timing, 1, 1),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(sfp, &sfp_cmds, "SFP module emulation", NULL);
